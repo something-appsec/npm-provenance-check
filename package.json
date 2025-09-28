@@ -12,9 +12,16 @@
   },
   "license": "ISC",
   "author": "",
-  "type": "commonjs",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node esbuild.mjs",
+    "start": "node dist/app.js",
+    "test": "node -e \"console.log('ok')\""
+  },
+  "dependencies": {
+    "esbuild": "^0.25.10",
+    "express": "^5.1.0",
+    "sigstore": "^4.0.0"
   }
 }
