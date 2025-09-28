@@ -27,13 +27,13 @@ jobs:
     - run: npm ci
     - run: npm run build --if-present
 
-# ---- Verify npm package signatures ----
+# Verify npm package signatures
     - name: Verify dependency signatures
       run: |
         # npm 9+ supports signature verification directly
         npm audit signatures
 
-# Install jq (used to parse the attestations API response)
+# Install jq and cosign and verify attestations
     - name: Install jq
       run: |
         sudo apt-get update -y
@@ -50,6 +50,7 @@ jobs:
         COSIGN_OIDC_ISSUER: "https://token.actions.githubusercontent.com"
         # Identity pattern; keep permissive unless you want to pin specific repos
         COSIGN_IDENTITY_RE: ".*"
+      shell: bash
       run: |
         set -euo pipefail
 
@@ -68,6 +69,7 @@ jobs:
           SAFE_NAME="${NAME//@/-at-}"
           PKG_ESC="${NAME//@/%40}"
 
+          # Download tarball
           TARBALL_URL=$(npm view "$NAME@$VER" dist.tarball || true)
           if [ -z "$TARBALL_URL" ]; then
             echo "No tarball URL for $NAME@$VER"
@@ -76,6 +78,7 @@ jobs:
           TARBALL="/tmp/${SAFE_NAME}-${VER}.tgz"
           curl -sSLf "$TARBALL_URL" -o "$TARBALL"
 
+          # Fetch attestations JSON
           ATTEST_URL="https://registry.npmjs.org/-/npm/v1/attestations/${PKG_ESC}@${VER}"
           ATTEST_JSON=$(curl -sSLf "$ATTEST_URL" || true)
           COUNT=$(echo "$ATTEST_JSON" | jq '.attestations | length' 2>/dev/null || echo 0)
@@ -85,6 +88,7 @@ jobs:
             if [ "${STRICT_ATTESTATIONS}" = "true" ]; then exit 1; else echo "::endgroup::"; continue; fi
           fi
 
+          # Extract SLSA provenance bundle
           BUNDLE="/tmp/${SAFE_NAME}-${VER}-bundle.json"
           echo "$ATTEST_JSON" \
             | jq '.attestations[] | select(.predicateType=="https://slsa.dev/provenance/v1").bundle' \
@@ -95,12 +99,69 @@ jobs:
             if [ "${STRICT_ATTESTATIONS}" = "true" ]; then exit 1; else echo "::endgroup::"; continue; fi
           fi
 
-          cosign verify-blob-attestation \
+          # Try verification; on failure, decode+print statement + digests
+          if ! cosign verify-blob-attestation \
             --bundle "$BUNDLE" \
             --new-bundle-format \
             --certificate-oidc-issuer="${COSIGN_OIDC_ISSUER}" \
             --certificate-identity-regexp="${COSIGN_IDENTITY_RE}" \
             "$TARBALL"
+          then
+            echo "❌ Verification FAILED for $NAME@$VER"
+            echo "  Tarball URL: $TARBALL_URL"
+            echo "  Attestations API: $ATTEST_URL"
+
+            # Compute tarball digests
+            TAR_SHA256=$(sha256sum "$TARBALL" | awk '{print $1}')
+            TAR_SHA512=$(sha512sum "$TARBALL" | awk '{print $1}')
+            echo "Computed tarball digests:"
+            echo "  sha256: $TAR_SHA256"
+            echo "  sha512: $TAR_SHA512"
+
+            # Decode DSSE payload (in-toto Statement) from the bundle
+            STATEMENT_JSON="/tmp/${SAFE_NAME}-${VER}-statement.json"
+            if jq -r '.dsseEnvelope.payload | @base64d' "$BUNDLE" > "$STATEMENT_JSON"; then
+              echo "Decoded in-toto Statement saved to: $STATEMENT_JSON"
+
+              echo "Subjects from Statement (name + digests):"
+              jq -r '
+                .subject[]
+                | "  name: \(.name)\n    digests: " +
+                  ( .digest | to_entries | map("\(.key)=\(.value)") | join(", ") )
+              ' "$STATEMENT_JSON"
+
+              echo "Builder/Source (if present):"
+              jq -r '
+                [
+                  .predicate?.buildType,
+                  .predicate?.builder?.id,
+                  .predicate?.invocation?.configSource?.uri,
+                  .predicate?.invocation?.environment?.github_ref,
+                  .predicate?.invocation?.environment?.github_repository
+                ] | @tsv
+              ' "$STATEMENT_JSON" | awk -F'\t' '{
+                if ($1!="") print "  buildType: " $1;
+                if ($2!="") print "  builder.id: " $2;
+                if ($3!="") print "  configSource.uri: " $3;
+                if ($4!="") print "  github_ref: " $4;
+                if ($5!="") print "  github_repository: " $5;
+              }'
+
+              # Optional: show certificate subject/issuer/dates (requires openssl, present on runners)
+              echo "Certificate (leaf) details:"
+              jq -r '.verificationMaterial.x509CertificateChain.certificates[0].rawBytes' "$BUNDLE" \
+                | base64 -d | openssl x509 -noout -subject -issuer -dates || true
+            else
+              echo "Failed to decode DSSE payload from bundle."
+            fi
+
+            if [ "${STRICT_ATTESTATIONS}" = "true" ]; then
+              echo "::endgroup::"
+              exit 1
+            fi
+          else
+            echo "✅ Verification OK for $NAME@$VER"
+          fi
 
           echo "::endgroup::"
         done
