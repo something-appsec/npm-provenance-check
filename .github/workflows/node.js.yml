@@ -38,11 +38,9 @@ jobs:
       run: |
         sudo apt-get update -y
         sudo apt-get install -y jq
-        
+
     - name: Install cosign
       uses: sigstore/cosign-installer@v3
-      with:
-        cosign-release: 'latest'   # or pin like 'v2.4.1'
 
     - name: Verify SLSA attestations for top-level dependencies
       env:
