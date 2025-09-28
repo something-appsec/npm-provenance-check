@@ -26,3 +26,14 @@ jobs:
         cache: 'npm'
     - run: npm ci
     - run: npm run build --if-present
+
+# ---- NEW STEP: install cosign ----
+    - name: Install cosign
+      run: |
+        curl -sSLf https://raw.githubusercontent.com/sigstore/cosign/main/install.sh | sudo bash
+
+# ---- NEW STEP: verify npm package signatures ----
+    - name: Verify dependency signatures
+      run: |
+        # npm 9+ supports signature verification directly
+        npm audit signatures
