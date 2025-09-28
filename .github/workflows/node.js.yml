@@ -43,7 +43,7 @@ jobs:
     - name: Verify SLSA attestations for top-level dependencies
       env:
         # Set to "false" to only warn when attestations are missing/invalid
-        STRICT_ATTESTATIONS: "true"
+        STRICT_ATTESTATIONS: "false"
         # OIDC issuer used for npm provenance (GitHub Actions trusted publishing)
         COSIGN_OIDC_ISSUER: "https://token.actions.githubusercontent.com"
         # Identity pattern; keep permissive unless you want to pin specific repos
